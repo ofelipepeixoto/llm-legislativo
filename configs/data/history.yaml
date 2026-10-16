@@ -1,0 +1,17 @@
+# Perfil restaurado a partir dos campos consumidos pelo código upstream.
+# Limites explícitos de lote; não declara cobertura histórica nem habilita execução.
+schema_version: '1.0.0'
+camara:
+  base_api_url: https://dadosabertos.camara.leg.br/api/v2
+  discovery:
+    annual_catalog_start_year: 1934
+    max_segments_per_run: 1
+    max_pages_per_segment: 1
+    max_enrichment_requests_per_run: 5
+senado:
+  base_api_url: https://legis.senado.leg.br/dadosabertos/v3
+network:
+  user_agent: LLM-Legislativo-Radar-Study/1.0
+  max_retries: 2
+  connect_timeout_seconds: 10
+  read_timeout_seconds: 30

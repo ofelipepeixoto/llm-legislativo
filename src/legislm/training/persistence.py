@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -22,6 +23,28 @@ def compute_file_sha256(file_path: Union[str, Path]) -> str:
         while chunk := f.read(65536):
             hasher.update(chunk)
     return hasher.hexdigest()
+
+
+def safe_artifact_path(root: Path, relative: str) -> Path:
+    """Contain static manifest paths and reject symlink components; no race-proof sandbox."""
+    if (not isinstance(relative, str) or not relative or "\\" in relative or
+            Path(relative).is_absolute() or any(part in {"", ".", ".."} for part in relative.split("/"))):
+        raise ValueError("Invalid artifact path")
+    base = root.resolve()
+    candidate = base
+    for part in relative.split("/"):
+        candidate = candidate / part
+        if candidate.is_symlink():
+            raise ValueError("Artifact symlinks are not allowed")
+    if not candidate.resolve().is_relative_to(base):
+        raise ValueError("Artifact path escapes root")
+    return candidate
+
+
+def safe_checkpoint_id(value: str) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value):
+        raise ValueError("Invalid checkpoint ID")
+    return value
 
 
 class PersistenceBackend(ABC):
@@ -75,17 +98,21 @@ class LocalPersistenceBackend(PersistenceBackend):
         with open(manifest_file, "r", encoding="utf-8") as f:
             manifest = json.load(f)
 
+        from legislm.training.checkpoint import validate_checkpoint_manifest
+        validate_checkpoint_manifest(manifest)
         run_id = manifest["run_id"]
-        checkpoint_id = manifest["checkpoint_id"]
+        checkpoint_id = safe_checkpoint_id(manifest["checkpoint_id"])
         manifest_sha256 = compute_file_sha256(manifest_file)
 
         # 1. Valida integridade de todos os arquivos descritos no manifesto
         for file_entry in manifest.get("files", []):
             rel_path = file_entry["path"]
             expected_sha256 = file_entry["sha256"]
-            actual_file = src_dir / rel_path
+            actual_file = safe_artifact_path(src_dir, rel_path)
             if not actual_file.exists():
                 raise FileNotFoundError(f"Arquivo ausente no checkpoint: {actual_file}")
+            if not actual_file.is_file() or actual_file.stat().st_size != file_entry["size_bytes"]:
+                raise ValueError("Artifact size/type mismatch")
             actual_sha256 = compute_file_sha256(actual_file)
             if actual_sha256 != expected_sha256:
                 raise ValueError(
@@ -93,13 +120,14 @@ class LocalPersistenceBackend(PersistenceBackend):
                 )
 
         # 2. Copia para o destino persistente sob staging / destino final
-        dst_dir = run_root / "checkpoints" / checkpoint_id
+        dst_dir = safe_artifact_path(run_root, "checkpoints/" + checkpoint_id)
         dst_dir.mkdir(parents=True, exist_ok=True)
 
         for file_entry in manifest.get("files", []):
             rel_path = file_entry["path"]
-            src_f = src_dir / rel_path
-            dst_f = dst_dir / rel_path
+            src_f = safe_artifact_path(src_dir, rel_path)
+            dst_f = safe_artifact_path(dst_dir, rel_path)
+            dst_f.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src_f, dst_f)
 
         # Copia o manifesto
@@ -148,9 +176,13 @@ class LocalPersistenceBackend(PersistenceBackend):
             with open(manifest_file, "r", encoding="utf-8") as f:
                 manifest = json.load(f)
 
+            from legislm.training.checkpoint import validate_checkpoint_manifest
+            validate_checkpoint_manifest(manifest)
             for file_entry in manifest.get("files", []):
-                file_path = ckpt_dir / file_entry["path"]
+                file_path = safe_artifact_path(ckpt_dir, file_entry["path"])
                 if not file_path.exists():
+                    return False
+                if not file_path.is_file() or file_path.stat().st_size != file_entry["size_bytes"]:
                     return False
                 if compute_file_sha256(file_path) != file_entry["sha256"]:
                     return False
@@ -167,7 +199,12 @@ class LocalPersistenceBackend(PersistenceBackend):
 
         valid_ids: List[str] = []
         for entry in ckpts_root.iterdir():
-            if entry.is_dir() and self._validate_checkpoint_dir(entry):
+            if entry.is_dir() and not entry.is_symlink() and self._validate_checkpoint_dir(entry):
+                try:
+                    safe_checkpoint_id(entry.name)
+                    safe_artifact_path(run_root, "checkpoints/" + entry.name)
+                except ValueError:
+                    continue
                 valid_ids.append(entry.name)
 
         return sorted(valid_ids)
@@ -186,8 +223,8 @@ class LocalPersistenceBackend(PersistenceBackend):
                 try:
                     with open(latest_file, "r", encoding="utf-8") as f:
                         latest_data = json.load(f)
-                    cand_id = latest_data["checkpoint_id"]
-                    cand_dir = ckpts_root / cand_id
+                    cand_id = safe_checkpoint_id(latest_data["checkpoint_id"])
+                    cand_dir = safe_artifact_path(run_root, "checkpoints/" + cand_id)
                     if self._validate_checkpoint_dir(cand_dir):
                         return cand_dir
                 except Exception:
@@ -202,7 +239,7 @@ class LocalPersistenceBackend(PersistenceBackend):
             return ckpts_root / all_valid[-1]
 
         # Seletor explícito de ID de checkpoint
-        target_dir = ckpts_root / selector
+        target_dir = safe_artifact_path(run_root, "checkpoints/" + safe_checkpoint_id(selector))
         if not target_dir.exists():
             raise FileNotFoundError(f"Checkpoint {selector} não existe em {ckpts_root}")
         if not self._validate_checkpoint_dir(target_dir):

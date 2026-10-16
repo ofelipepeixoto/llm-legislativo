@@ -11,6 +11,7 @@ from pathlib import Path
 
 
 FILES = (
+    Path("LICENSE"),
     Path("README.md"),
     Path("pyproject.toml"),
     Path("requirements-base.lock"),
