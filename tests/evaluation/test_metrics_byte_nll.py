@@ -16,7 +16,8 @@ from legislm.evaluation.metrics import (
     count_words,
     split_text_into_utf8_segments,
 )
-from legislm.tokenization.bpe import LegislativeBpeTokenizer
+from legislm.tokenization.bpe import LegislativeBpeTokenizer, train_bpe_tokenizer
+from legislm.tokenization.config import TokenizerConfig
 
 
 class MockLinearLanguageModel(nn.Module):
@@ -191,7 +192,8 @@ class TestMetricsByteNll(unittest.TestCase):
 
         # Um BPE treinado em dados diferentes muda a granularidade, mas não o
         # conjunto exato de documentos/bytes ou a segmentação física comum.
-        trained_tok = LegislativeBpeTokenizer.load("data/artifacts/tokenizer/tokenizer.json")
+        config = TokenizerConfig.from_dict({"model": {"vocab_size": 300, "min_frequency": 1}})
+        trained_tok, _ = train_bpe_tokenizer(["Documento sintético separado do texto avaliado. " * 8], config)
         trained_model = MockLinearLanguageModel(trained_tok.get_vocab_size(), context_length=64)
         trained_result = compute_byte_nll_v1(trained_model, trained_tok, [doc], k_bytes=32)
         self.assertEqual(byte_result.item_list_sha256, trained_result.item_list_sha256)

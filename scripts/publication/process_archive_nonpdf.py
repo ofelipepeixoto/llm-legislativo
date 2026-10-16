@@ -79,6 +79,14 @@ def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", required=True, type=Path)
@@ -86,6 +94,10 @@ def main() -> int:
     parser.add_argument("--index", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     args = parser.parse_args()
+
+    actual_archive_sha256 = sha256_file(args.archive)
+    if actual_archive_sha256 != args.expected_archive_sha256:
+        raise ValueError("Archive SHA-256 mismatch; provenance not published")
 
     index_rows: dict[str, dict[str, str]] = {}
     with args.index.open(newline="", encoding="utf-8") as source:

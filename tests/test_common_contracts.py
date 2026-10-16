@@ -8,6 +8,7 @@ import hashlib
 import pathlib
 import tempfile
 import unittest
+import yaml
 from unittest.mock import patch
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -76,6 +77,15 @@ class TestCommonContracts(unittest.TestCase):
         ]
         for c in required_configs:
             self.assertTrue(c.exists(), f"Configuração {c} deve existir")
+
+    def test_restored_inventory_profile_has_explicit_limits(self):
+        config = yaml.safe_load((self.configs_dir / "data/history.yaml").read_text())
+        discovery = config["camara"]["discovery"]
+        self.assertEqual(discovery["max_segments_per_run"], 1)
+        self.assertEqual(discovery["max_pages_per_segment"], 1)
+        self.assertLessEqual(discovery["max_enrichment_requests_per_run"], 5)
+        self.assertTrue(config["camara"]["base_api_url"].startswith("https://"))
+        self.assertTrue(config["senado"]["base_api_url"].startswith("https://"))
 
     def test_parquet_fixtures_exist(self):
         """Verifica se os arquivos Parquet de fixtures canônicas foram gerados"""

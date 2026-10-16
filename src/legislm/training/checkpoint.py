@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -18,7 +19,7 @@ from torch.optim import Optimizer
 from legislm.training.config import TrainingConfig
 from legislm.training.data import DeterministicSampler, StratifiedTracker
 from legislm.training.optimizer import CosineAnnealingWarmupScheduler
-from legislm.training.persistence import compute_file_sha256
+from legislm.training.persistence import compute_file_sha256, safe_artifact_path, safe_checkpoint_id
 from legislm.training.precision import PrecisionManager
 
 
@@ -84,10 +85,25 @@ def validate_checkpoint_manifest(manifest: Dict[str, Any]) -> None:
     if not isinstance(files, list) or len(files) == 0:
         raise ValueError("files deve ser uma lista não vazia de arquivos")
 
+    safe_checkpoint_id(manifest["checkpoint_id"])
+    seen_paths = set()
     for f in files:
         for f_key in ("path", "size_bytes", "sha256"):
             if f_key not in f:
                 raise ValueError(f"Arquivo no manifesto sem campo obrigatório '{f_key}'")
+
+        relative = f["path"]
+        if (not isinstance(relative, str) or not relative or "\\" in relative or
+                Path(relative).is_absolute() or any(p in {"", ".", ".."} for p in relative.split("/")) or
+                relative in seen_paths):
+            raise ValueError("Invalid or duplicate artifact path")
+        seen_paths.add(relative)
+        if type(f["size_bytes"]) is not int or f["size_bytes"] < 0:
+            raise ValueError("Invalid artifact size")
+        if not isinstance(f["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", f["sha256"]):
+            raise ValueError("Invalid artifact digest")
+    if "checkpoint.pt" not in seen_paths:
+        raise ValueError("checkpoint.pt must be covered by the manifest")
 
 
 def save_checkpoint(
@@ -216,9 +232,11 @@ def load_checkpoint(
 
     # Validação de hashes de arquivos
     for file_entry in manifest["files"]:
-        target_f = d / file_entry["path"]
+        target_f = safe_artifact_path(d, file_entry["path"])
         if not target_f.exists():
             raise FileNotFoundError(f"Arquivo ausente: {target_f}")
+        if not target_f.is_file() or target_f.stat().st_size != file_entry["size_bytes"]:
+            raise ValueError("Artifact size/type mismatch")
         actual_sha = compute_file_sha256(target_f)
         if actual_sha != file_entry["sha256"]:
             raise ValueError(
@@ -227,7 +245,9 @@ def load_checkpoint(
 
     pt_path = d / "checkpoint.pt"
     # Carga estrita com weights_only=True
-    ckpt_data = torch.load(pt_path, weights_only=True)
+    ckpt_data = torch.load(pt_path, weights_only=True, map_location="cpu")
+    if not isinstance(ckpt_data, dict) or ckpt_data.get("scientific_config_hash") != manifest["scientific_config_hash"]:
+        raise ValueError("Scientific metadata does not match checkpoint payload")
     return ckpt_data
 
 
