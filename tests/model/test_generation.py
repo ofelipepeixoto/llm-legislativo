@@ -58,16 +58,19 @@ def test_top_k_1_equals_greedy():
     assert torch.equal(out_top1, out_greedy), "top_k=1 divergiu de greedy=True!"
 
 
-def test_early_stopping_on_eos():
+def test_early_stopping_on_eos(monkeypatch):
     """Geração deve parar imediatamente quando o token EOS for gerado."""
     cfg = GPTConfig(vocab_size=20, context_length=16, d_model=16, n_layers=1, n_heads=2, eos_token_id=2)
     model = GPTModel(cfg)
 
-    # Forçamos o modelo a prever sempre EOS (id 2) na saída
-    with torch.no_grad():
-        model.lm_head.weight.zero_()
-        # Faz a linha 2 ter logit altíssimo
-        model.lm_head.weight[2, :] = 100.0
+    # Fixamos os logits, não os pesos ligados ao embedding. Uma linha constante
+    # de pesos não garante EOS após LayerNorm e introduzia falha aleatória.
+    def eos_logits(hidden):
+        logits = hidden.new_full((*hidden.shape[:-1], cfg.vocab_size), float("-inf"))
+        logits[..., 2] = 0.0
+        return logits
+
+    monkeypatch.setattr(model.lm_head, "forward", eos_logits)
 
     prompt = [1, 5]
     # Pedimos 10 tokens novos, mas como o primeiro gerado será 2 (EOS), deve parar com comprimento 3
