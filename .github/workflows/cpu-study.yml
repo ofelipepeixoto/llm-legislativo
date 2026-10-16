@@ -14,7 +14,8 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install hash-pinned CPU profile
-        run: python -m pip install --require-hashes --only-binary=:all: -r requirements-cpu.lock
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r requirements-cpu.lock
       - name: Offline Python contracts
         env:
           PYTHONPATH: tests/audit:src:.
